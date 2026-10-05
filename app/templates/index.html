@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>FlowOps</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <h1>FlowOps</h1>
+
+    <form method="get" action="/">
+        <input
+            type="text"
+            id="oferta"
+            name="oferta"
+            value="{{ oferta_buscada }}"
+            placeholder="Buscar oferta, ej: 01OFE2026T012740"
+        >
+        <button type="submit">Buscar</button>
+    </form>
+
+    {% if error %}
+        <p class="mensaje-error">{{ error }}</p>
+    {% endif %}
+
+    {% if no_encontrado %}
+        <p class="mensaje-error">No se ha encontrado ninguna oferta con esa referencia.</p>
+    {% endif %}
+
+    {% if resultado %}
+        <h2>Oferta: {{ resultado.oferta }}</h2>
+        <p><strong>Pedido de venta (PDV):</strong> {{ resultado.pdv }}</p>
+
+        <h3>Comprobación de unidades por artículo</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Artículo</th>
+                    <th>Ofertadas</th>
+                    <th>Compradas</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for c in resultado.comprobacion_unidades %}
+                <tr class="{{ 'fila-warning' if c.warning else '' }}">
+                    <td>{{ c.articulo }}</td>
+                    <td>{{ c.ofertadas }}</td>
+                    <td>{{ c.compradas }} {% if c.warning %}⚠️{% endif %}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <h3>Pedidos de compra</h3>
+        {% if resultado.pedidos_compra %}
+            {% for pedido in resultado.pedidos_compra %}
+            <details class="acordeon-pedido">
+                <summary>{{ pedido.nombre }}</summary>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Artículo</th>
+                            <th>Descripción</th>
+                            <th>Unidades</th>
+                            <th>Destino</th>
+                            <th>Uds.Pick Order</th>
+                            <th>Uds.Albarán</th>
+                            <th>Stock</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for art in pedido.articulos %}
+                        <tr class="{{ 'fila-warning' if art.warning_preparacion else '' }}">
+                            <td>{{ art.articulo }}</td>
+                            <td>{{ art.descripcion }}</td>
+                            <td>{{ art.unidades }}</td>
+                            <td>{{ art.destino if art.destino else "-" }}</td>
+                            <td>{{ art.pick_order }} {% if art.warning_preparacion %}⚠️{% endif %}</td>
+                            <td>{{ art.albaran }}</td>
+                            <td>{{ art.stock }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </details>
+            {% endfor %}
+        {% else %}
+            <p>-</p>
+        {% endif %}
+
+        <h3>Artículos</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Artículo</th>
+                    <th>Descripción</th>
+                    <th>Unidades</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for art in resultado.articulos %}
+                <tr>
+                    <td>{{ art.articulo }}</td>
+                    <td>{{ art.descripcion }}</td>
+                    <td>{{ art.unidades }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% endif %}
+</body>
+</html>
