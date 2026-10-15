@@ -86,6 +86,27 @@ ul {
     padding-left: 20px;
 }
 
+/* Enlaces (ej: de la búsqueda por artículo a la vista de la oferta) */
+a {
+    color: #60a5fa;
+}
+
+a:hover {
+    color: #93c5fd;
+}
+
+/* Descripción bajo el título en la búsqueda por artículo */
+.descripcion-articulo {
+    color: #a1a1aa;
+    margin-top: -8px;
+}
+
+/* Si la tabla de resultados es muy ancha, hace scroll horizontal
+   en vez de desbordar la página */
+.tabla-scroll {
+    overflow-x: auto;
+}
+
 /* Acordeones de pedidos de compra */
 .acordeon-pedido {
     border: 1px solid #3f3f46;
@@ -104,6 +125,21 @@ ul {
 .acordeon-pedido table {
     margin-top: 10px;
 }
+
+/* Texto secundario en el resumen de cada pedido de compra */
+.resumen-pedido {
+    font-weight: 400;
+    color: #a1a1aa;
+}
+
+/* Aviso informativo (no es un error): ej. demasiados resultados */
+.mensaje-aviso {
+    color: #fde68a;
+    background-color: #422006;
+    padding: 10px 14px;
+    border-radius: 4px;
+}
+
 /* Filas con alerta de discrepancia de unidades */
 .fila-warning {
     background-color: #450a0a;
