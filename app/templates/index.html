@@ -8,18 +8,32 @@
 <body>
     <h1>FlowOps</h1>
 
-    <!-- Buscador único: acepta una oferta, un artículo o un pedido de compra -->
-    <form method="get" action="/">
-        <input
-            type="text"
-            id="q"
-            name="q"
-            value="{{ consulta }}"
-            placeholder="Buscar oferta, artículo o pedido de compra, ej: 01OFE2026T012740, A40-031 o OCA:2026/D005290"
-            autofocus
-        >
-        <button type="submit">Buscar</button>
-    </form>
+    <div class="buscadores">
+        <!-- Buscador principal: acepta una oferta, un artículo o un pedido de compra -->
+        <form method="get" action="/">
+            <input
+                type="text"
+                id="q"
+                name="q"
+                value="{{ consulta }}"
+                placeholder="Buscar oferta, artículo o pedido de compra, ej: 01OFE2026T012740, A40-031 o OCA:2026/D005290"
+                autofocus
+            >
+            <button type="submit">Buscar</button>
+        </form>
+
+        <!-- Consulta de stock de un artículo (según el Excel de stock) -->
+        <form method="get" action="/" class="buscador-stock">
+            <input
+                type="text"
+                id="stock"
+                name="stock"
+                value="{{ consulta_stock }}"
+                placeholder="Consultar stock de un artículo, ej: 43UM662H4LC.AEU"
+            >
+            <button type="submit">Ver stock</button>
+        </form>
+    </div>
 
     {% if error %}
         <p class="mensaje-error">{{ error }}</p>
@@ -30,6 +44,16 @@
             No se ha encontrado ninguna oferta, artículo ni pedido de compra con ese código.
             {% if consulta | length < min_caracteres_pedido %}
                 <br>Para buscar pedidos de compra escribe al menos {{ min_caracteres_pedido }} caracteres.
+            {% endif %}
+            <br>Este buscador solo mira el Pendiente de Servir. Para consultar stock usa «Ver stock».
+        </p>
+    {% endif %}
+
+    {% if stock_no_encontrado %}
+        <p class="mensaje-aviso">
+            Ningún artículo del Excel de stock coincide con «{{ consulta_stock }}»: se considera stock 0.
+            {% if consulta_stock | length < min_caracteres_stock %}
+                <br>Para buscar por parte del código escribe al menos {{ min_caracteres_stock }} caracteres.
             {% endif %}
         </p>
     {% endif %}
@@ -161,6 +185,87 @@
                 </tbody>
             </table>
         </div>
+    {% endif %}
+
+    <!-- ===================== RESULTADO: CONSULTA DE STOCK ===================== -->
+
+    <!-- Detalle del stock de UN artículo: total, aviso si hay respaldo y tabla por propietario -->
+    {% macro detalle_stock(a) %}
+        {% if a.propietarios %}
+            {% set n_prop = a.propietarios | length %}
+            <p>
+                <strong>Stock total: {{ a.total }} {{ 'unidad' if a.total == 1 else 'unidades' }}</strong>
+                en {{ n_prop }} {{ 'propietario' if n_prop == 1 else 'propietarios' }}
+            </p>
+
+            {% if a.fuente == 'stock' %}
+                <p class="mensaje-aviso">
+                    La columna STOCK PROPIETARIOS está vacía para este artículo:
+                    se muestra el stock de la columna STOCK.
+                </p>
+            {% endif %}
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Propietario</th>
+                        <th>Unidades</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for p in a.propietarios %}
+                    <tr>
+                        <td>{{ p.propietario }}</td>
+                        <td>{{ p.unidades }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <p class="mensaje-aviso">Sin stock en ningún propietario.</p>
+        {% endif %}
+    {% endmacro %}
+
+    {% if resultado_stock %}
+        {% set articulos = resultado_stock.articulos %}
+        {% set n_art = resultado_stock.total_articulos %}
+
+        {% if resultado_stock.aproximada %}
+            <p class="mensaje-aviso">
+                No hay ningún artículo con el código «{{ consulta_stock }}».
+                Se muestran los que lo contienen: {{ n_art }} {{ 'artículo' if n_art == 1 else 'artículos' }}.
+                {% if resultado_stock.truncado %}
+                    Solo se ven los primeros {{ articulos | length }}: escribe más del código para afinar.
+                {% endif %}
+            </p>
+        {% endif %}
+
+        {% if articulos | length == 1 %}
+            {% set a = articulos[0] %}
+            <h2>Stock: {{ a.articulo }}</h2>
+            <p class="descripcion-articulo">{{ a.descripcion }}</p>
+            {{ detalle_stock(a) }}
+        {% else %}
+            <h2>Stock: {{ consulta_stock }}</h2>
+            {% for a in articulos %}
+            <details class="acordeon-pedido">
+                <summary>
+                    {{ a.articulo }}
+                    <span class="resumen-pedido">
+                        — {{ a.total }} {{ 'unidad' if a.total == 1 else 'unidades' }} — {{ a.descripcion }}
+                    </span>
+                </summary>
+                {{ detalle_stock(a) }}
+            </details>
+            {% endfor %}
+        {% endif %}
+    {% endif %}
+
+    <!-- Fichero de stock que se ha leído, para comprobar que es el actualizado -->
+    {% if info_stock %}
+        <p class="info-fichero">
+            Datos de {{ info_stock.nombre }} · modificado el {{ info_stock.modificado }} · {{ info_stock.filas }} filas
+        </p>
     {% endif %}
 
     <!-- ===================== RESULTADO: BÚSQUEDA POR PEDIDO DE COMPRA ===================== -->

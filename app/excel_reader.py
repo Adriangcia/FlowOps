@@ -3,6 +3,9 @@
 # - El Excel de stock (stockDisponible.xlsx): stock por artículo y propietario.
 # Toda la lógica de lectura, limpieza y cruce de datos vive aquí.
 
+import re
+from datetime import datetime
+
 import pandas as pd
 from pathlib import Path
 
@@ -17,6 +20,20 @@ NOMBRE_FICHERO_STOCK = "stockDisponible.xlsx"
 # pedidos de compra que se muestran de una vez.
 MIN_CARACTERES_PEDIDO = 4
 MAX_PEDIDOS_MOSTRADOS = 20
+
+# Consulta de stock: si no hay ningún artículo con el código exacto, se buscan
+# los que lo CONTIENEN (ej: "OLED77C66LB" encuentra "OLED77C66LB.AEU"). Para
+# eso hay que escribir al menos MIN_CARACTERES_STOCK caracteres, y se muestran
+# como mucho MAX_ARTICULOS_STOCK artículos de una vez.
+MIN_CARACTERES_STOCK = 4
+MAX_ARTICULOS_STOCK = 20
+
+# La columna "STOCK PROPIETARIOS" del Excel de stock es un texto del tipo
+# "TCN:TC-3 (CAVERIN): 1, GIJ:BUFFER_DAIMLER-GIJ: 3, GIJ:2M.2M GIJ: 3".
+# Este patrón saca cada pareja "propietario: unidades". Se busca el
+# ": <número>" seguido de ", " o del final para no romper nombres que
+# lleven comas o dos puntos dentro.
+PATRON_STOCK_PROPIETARIOS = re.compile(r"(.+?): (-?\d+(?:[.,]\d+)?)(?:, |$)")
 
 # Traducción de los valores de la columna "Propietario" a destinos de envío
 # legibles. Si un valor no está en este diccionario, no se muestra destino
@@ -97,14 +114,20 @@ def cargar_datos():
     return _leer_excel_con_cache(ruta, "DIA")
 
 
-def cargar_stock():
+def cargar_stock_completo():
     """
-    Carga el Excel de stock y devuelve un DataFrame con la hoja
-    'GET_PRODUCTOS_4MAIL', quedándonos solo con las columnas relevantes.
+    Carga el Excel de stock con TODAS las columnas (hoja 'GET_PRODUCTOS_4MAIL').
     """
     ruta = obtener_ruta_stock()
-    df = _leer_excel_con_cache(ruta, "GET_PRODUCTOS_4MAIL")
-    return df[["ARTICULO", "NOMBRE PROPIETARIO", "STOCK"]]
+    return _leer_excel_con_cache(ruta, "GET_PRODUCTOS_4MAIL")
+
+
+def cargar_stock():
+    """
+    Devuelve el Excel de stock solo con las columnas que usa el cruce de
+    stock de los pedidos de compra: ARTICULO, NOMBRE PROPIETARIO y STOCK.
+    """
+    return cargar_stock_completo()[["ARTICULO", "NOMBRE PROPIETARIO", "STOCK"]]
 
 
 def limpiar_valor(valor):
@@ -545,4 +568,157 @@ def buscar_pedido_compra(texto):
         "total_pedidos": len(grupos),
         "truncado": len(grupos) > MAX_PEDIDOS_MOSTRADOS,
         "pedidos": pedidos,
+    }
+
+
+def _parsear_stock_propietarios(texto):
+    """
+    Convierte el texto de la columna "STOCK PROPIETARIOS"
+    (ej: "TCN:TC-3 (CAVERIN): 1, GIJ:2M.2M GIJ: 3") en una lista de
+    {"propietario": ..., "unidades": ...}. Si el texto no tiene el formato
+    esperado, devuelve una lista vacía.
+    """
+    propietarios = []
+    for coincidencia in PATRON_STOCK_PROPIETARIOS.finditer(str(texto)):
+        unidades = float(coincidencia.group(2).replace(",", "."))
+        propietarios.append({
+            "propietario": coincidencia.group(1).strip(),
+            "unidades": _formatear_numero(unidades),
+        })
+
+    return propietarios
+
+
+def _stock_de_articulo(filas):
+    """
+    Construye el stock de UN artículo a partir de sus filas del Excel de
+    stock (hay una fila por propietario). Devuelve:
+    - articulo: código del artículo tal cual aparece en el Excel de stock
+    - descripcion: descripción del artículo
+    - propietarios: lista de {"propietario", "unidades"} con el stock que
+      tiene cada propietario, ordenada de más a menos unidades
+    - total: suma de las unidades de todos los propietarios
+    - fuente: "stock_propietarios" si los datos salen de la columna
+      "STOCK PROPIETARIOS"; "stock" si esa columna estaba vacía y se ha usado
+      como respaldo la columna "STOCK" de cada fila
+    """
+    articulo = str(filas.iloc[0]["ARTICULO"]).strip()
+    descripcion = next(
+        (str(d).strip() for d in filas["DESCRIPCION"] if limpiar_valor(d) != "-"),
+        "-",
+    )
+
+    # 1) Lo que dice la columna STOCK PROPIETARIOS (es el mismo texto en todas
+    #    las filas de un mismo artículo, así que usamos el primero informado)
+    textos = [str(t) for t in filas["STOCK PROPIETARIOS"] if limpiar_valor(t) != "-"]
+    propietarios = _parsear_stock_propietarios(textos[0]) if textos else []
+    fuente = "stock_propietarios"
+
+    # 2) Respaldo: si esa columna está vacía (o no se entiende), usamos la
+    #    columna STOCK de cada fila, que trae el stock de su propietario
+    if not propietarios:
+        fuente = "stock"
+        acumulado = {}
+        for nombre, stock in zip(filas["NOMBRE PROPIETARIO"], filas["STOCK"]):
+            unidades = _a_numero(stock)
+            if unidades > 0 and limpiar_valor(nombre) != "-":
+                nombre = str(nombre).strip()
+                acumulado[nombre] = acumulado.get(nombre, 0.0) + unidades
+
+        propietarios = [
+            {"propietario": nombre, "unidades": _formatear_numero(unidades)}
+            for nombre, unidades in acumulado.items()
+        ]
+
+    # Más stock primero y, si empatan, por nombre
+    propietarios.sort(key=lambda p: (-_a_numero(p["unidades"]), p["propietario"]))
+
+    total = _formatear_numero(sum(_a_numero(p["unidades"]) for p in propietarios))
+
+    return {
+        "articulo": articulo,
+        "descripcion": descripcion,
+        "propietarios": propietarios,
+        "total": total,
+        "fuente": fuente,
+    }
+
+
+def buscar_stock(texto):
+    """
+    Consulta SOLO el Excel de stock (no mira el Excel diario) y devuelve el
+    stock por propietario de los artículos que coinciden con lo escrito:
+    1) Si hay un artículo con ese código exacto (sin distinguir mayúsculas
+       ni espacios), se devuelve solo ese.
+    2) Si no, se devuelven los artículos cuyo código CONTIENE lo escrito
+       (ej: "OLED77C66LB" encuentra "OLED77C66LB.AEU"), siempre que se
+       escriban al menos MIN_CARACTERES_STOCK caracteres.
+
+    Devuelve None si no hay ninguna coincidencia (se interpreta como stock 0).
+    Si no, un diccionario con:
+    - aproximada: True si no había coincidencia exacta (caso 2)
+    - total_articulos: nº de artículos que coinciden
+    - truncado: True si hay más artículos que MAX_ARTICULOS_STOCK
+    - articulos: lista (como mucho MAX_ARTICULOS_STOCK) con el stock de cada
+      artículo (ver _stock_de_articulo)
+
+    Si no existe el fichero stockDisponible.xlsx, lanza FileNotFoundError.
+    """
+    df = cargar_stock_completo()
+
+    buscado = str(texto).strip().lower()
+    if buscado in ("", "-"):
+        return None
+
+    articulos_norm = df["ARTICULO"].astype(str).str.strip().str.lower()
+
+    # 1) Coincidencia exacta
+    coincide = articulos_norm == buscado
+    aproximada = False
+
+    # 2) Si no hay exacta, coincidencia parcial
+    if not coincide.any():
+        if len(buscado) < MIN_CARACTERES_STOCK:
+            return None
+
+        coincide = articulos_norm.str.contains(buscado, regex=False)
+        aproximada = True
+
+        if not coincide.any():
+            return None
+
+    filas = df[coincide].copy()
+    filas["_art"] = articulos_norm[coincide]
+
+    # Un artículo por grupo. Primero los que EMPIEZAN por lo escrito y luego
+    # el resto, cada bloque ordenado alfabéticamente.
+    grupos = sorted(
+        filas.groupby("_art"),
+        key=lambda grupo: (not grupo[0].startswith(buscado), grupo[0]),
+    )
+
+    return {
+        "aproximada": aproximada,
+        "total_articulos": len(grupos),
+        "truncado": len(grupos) > MAX_ARTICULOS_STOCK,
+        "articulos": [
+            _stock_de_articulo(grupo) for _, grupo in grupos[:MAX_ARTICULOS_STOCK]
+        ],
+    }
+
+
+def info_fichero_stock():
+    """
+    Datos del Excel de stock que se está leyendo (para mostrarlos en
+    pantalla y poder comprobar que es el fichero actualizado):
+    nombre, fecha de última modificación y nº de filas.
+    Si no existe el fichero, lanza FileNotFoundError.
+    """
+    ruta = obtener_ruta_stock()
+    modificado = datetime.fromtimestamp(ruta.stat().st_mtime)
+
+    return {
+        "nombre": ruta.name,
+        "modificado": modificado.strftime("%d/%m/%Y %H:%M"),
+        "filas": len(cargar_stock_completo()),
     }

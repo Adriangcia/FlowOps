@@ -14,10 +14,17 @@ h1 {
     color: #fafafa;
 }
 
+/* Contenedor de los dos buscadores (principal y de stock), uno encima del otro */
+.buscadores {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 32px;
+}
+
 form {
     display: flex;
     gap: 8px;
-    margin-bottom: 32px;
 }
 
 input[type="text"] {
@@ -86,6 +93,19 @@ ul {
     padding-left: 20px;
 }
 
+/* El buscador de stock lleva otro color para distinguirlo del principal */
+.buscador-stock button {
+    background-color: #0d9488;
+}
+
+.buscador-stock button:hover {
+    background-color: #0f766e;
+}
+
+.buscador-stock input[type="text"]:focus {
+    border-color: #0d9488;
+}
+
 /* Enlaces (ej: de la búsqueda por artículo a la vista de la oferta) */
 a {
     color: #60a5fa;
@@ -130,6 +150,13 @@ a:hover {
 .resumen-pedido {
     font-weight: 400;
     color: #a1a1aa;
+}
+
+/* Línea pequeña con el fichero de stock leído (nombre, fecha y filas) */
+.info-fichero {
+    color: #71717a;
+    font-size: 0.85rem;
+    margin-top: 24px;
 }
 
 /* Aviso informativo (no es un error): ej. demasiados resultados */
