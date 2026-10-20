@@ -1,0 +1,11 @@
+# Entorno virtual de Python (cada máquina crea el suyo)
+.venv/
+
+# Ficheros compilados de Python
+__pycache__/
+*.pyc
+
+# Carpeta de Excels: no versionamos los ficheros diarios,
+# solo mantenemos la carpeta con .gitkeep
+Excels/*
+!Excels/.gitkeep
