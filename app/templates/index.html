@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>FlowOps</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <h1>FlowOps</h1>
+
+    <div class="buscadores">
+        <!-- Buscador principal: acepta una oferta, un artículo o un pedido de compra -->
+        <form method="get" action="/">
+            <input
+                type="text"
+                id="q"
+                name="q"
+                value="{{ consulta }}"
+                placeholder="Buscar oferta, artículo o pedido de compra, ej: 01OFE2026T012740, A40-031 o OCA:2026/D005290"
+                autofocus
+            >
+            <button type="submit">Buscar</button>
+        </form>
+
+        <!-- Consulta de stock de un artículo (según el Excel de stock) -->
+        <form method="get" action="/" class="buscador-stock">
+            <input
+                type="text"
+                id="stock"
+                name="stock"
+                value="{{ consulta_stock }}"
+                placeholder="Consultar stock de un artículo, ej: 43UM662H4LC.AEU"
+            >
+            <button type="submit">Ver stock</button>
+        </form>
+    </div>
+
+    {% if error %}
+        <p class="mensaje-error">{{ error }}</p>
+    {% endif %}
+
+    {% if no_encontrado %}
+        <p class="mensaje-error">
+            No se ha encontrado ninguna oferta, artículo ni pedido de compra con ese código.
+            {% if consulta | length < min_caracteres_pedido %}
+                <br>Para buscar pedidos de compra escribe al menos {{ min_caracteres_pedido }} caracteres.
+            {% endif %}
+            <br>Este buscador solo mira el Pendiente de Servir. Para consultar stock usa «Ver stock».
+        </p>
+    {% endif %}
+
+    {% if stock_no_encontrado %}
+        <p class="mensaje-aviso">
+            Ningún artículo del Excel de stock coincide con «{{ consulta_stock }}»: se considera stock 0.
+            {% if consulta_stock | length < min_caracteres_stock %}
+                <br>Para buscar por parte del código escribe al menos {{ min_caracteres_stock }} caracteres.
+            {% endif %}
+        </p>
+    {% endif %}
+
+    <!-- ===================== RESULTADO: BÚSQUEDA POR OFERTA ===================== -->
+    {% if resultado %}
+        <!-- Cabecera: el título de la oferta y su Ref.Pedido Cliente en la misma línea -->
+        <div class="cabecera-oferta">
+            <h2>Oferta: {{ resultado.oferta }}</h2>
+            <p class="ref-pedido-cliente"> Ref: {{ resultado.ref_pedido_cliente }}</p>
+        </div>
+        <p><strong>Cliente:</strong> {{ resultado.cliente }}</p>
+        <p><strong>Cliente final:</strong> {{ resultado.cliente_final }}</p>
+        <p><strong>Pedido de venta (PDV):</strong> {{ resultado.pdv }}</p>
+
+        <h3>Comprobación de unidades por artículo</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Artículo</th>
+                    <th>Ofertadas</th>
+                    <th>Compradas</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for c in resultado.comprobacion_unidades %}
+                <tr class="{{ 'fila-warning' if c.warning else '' }}">
+                    <td>{{ c.articulo }}</td>
+                    <td>{{ c.ofertadas }}</td>
+                    <td>{{ c.compradas }} {% if c.warning %}⚠️{% endif %}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <h3>Pedidos de compra</h3>
+        {% if resultado.pedidos_compra %}
+            {% for pedido in resultado.pedidos_compra %}
+            <details class="acordeon-pedido">
+                <summary>{{ pedido.nombre }}</summary>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Artículo</th>
+                            <th>Descripción</th>
+                            <th>Unidades</th>
+                            <th>Destino</th>
+                            <th>Uds.Pick Order</th>
+                            <th>Uds.Albarán</th>
+                            <th>Stock</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for art in pedido.articulos %}
+                        <tr class="{{ 'fila-warning' if art.warning_preparacion else '' }}">
+                            <td>{{ art.articulo }}</td>
+                            <td>{{ art.descripcion }}</td>
+                            <td>{{ art.unidades }}</td>
+                            <td>{{ art.destino if art.destino else "-" }}</td>
+                            <td>{{ art.pick_order }} {% if art.warning_preparacion %}⚠️{% endif %}</td>
+                            <td>{{ art.albaran }}</td>
+                            <td>{{ art.stock }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </details>
+            {% endfor %}
+        {% else %}
+            <p>-</p>
+        {% endif %}
+
+        <h3>Artículos</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Artículo</th>
+                    <th>Descripción</th>
+                    <th>Unidades</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for art in resultado.articulos %}
+                <tr>
+                    <td>{{ art.articulo }}</td>
+                    <td>{{ art.descripcion }}</td>
+                    <td>{{ art.unidades }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% endif %}
+
+    <!-- ===================== RESULTADO: BÚSQUEDA POR ARTÍCULO ===================== -->
+    {% if resultado_articulo %}
+        <h2>Artículo: {{ resultado_articulo.articulo }}</h2>
+        <p class="descripcion-articulo">{{ resultado_articulo.descripcion }}</p>
+        {% set n_ofertas = resultado_articulo.total_ofertas %}
+        {% set n_lineas = resultado_articulo.lineas | length %}
+        <p>
+            <strong>Presente en {{ n_ofertas }} {{ 'oferta' if n_ofertas == 1 else 'ofertas' }}</strong>
+            ({{ n_lineas }} {{ 'línea' if n_lineas == 1 else 'líneas' }})
+        </p>
+
+        <div class="tabla-scroll">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Oferta</th>
+                        <th>Cliente</th>
+                        <th>Cliente final</th>
+                        <th>PDV</th>
+                        <th>Pedido de compra</th>
+                        <th>Unidades</th>
+                        <th>Destino</th>
+                        <th>Stock en destino</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for l in resultado_articulo.lineas %}
+                    <tr>
+                        <!-- El enlace lleva a la vista completa de esa oferta -->
+                        <td><a href="{{ url_for('main.index', q=l.oferta) }}">{{ l.oferta }}</a></td>
+                        <td>{{ l.cliente }}</td>
+                        <td>{{ l.cliente_final }}</td>
+                        <td>{{ l.pdv }}</td>
+                        <td>{{ l.pedido_compra }}</td>
+                        <td>{{ l.unidades }}</td>
+                        <td>{{ l.destino if l.destino else "-" }}</td>
+                        <td>{{ l.stock if l.stock is not none else "-" }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    {% endif %}
+
+    <!-- ===================== RESULTADO: CONSULTA DE STOCK ===================== -->
+
+    <!-- Detalle del stock de UN artículo: total, aviso si hay respaldo y tabla por propietario -->
+    {% macro detalle_stock(a) %}
+        {% if a.propietarios %}
+            {% set n_prop = a.propietarios | length %}
+            <p>
+                <strong>Stock total: {{ a.total }} {{ 'unidad' if a.total == 1 else 'unidades' }}</strong>
+                en {{ n_prop }} {{ 'propietario' if n_prop == 1 else 'propietarios' }}
+            </p>
+
+            {% if a.fuente == 'stock' %}
+                <p class="mensaje-aviso">
+                    La columna STOCK PROPIETARIOS está vacía para este artículo:
+                    se muestra el stock de la columna STOCK.
+                </p>
+            {% endif %}
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Propietario</th>
+                        <th>Unidades</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for p in a.propietarios %}
+                    <tr>
+                        <td>{{ p.propietario }}</td>
+                        <td>{{ p.unidades }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <p class="mensaje-aviso">Sin stock en ningún propietario.</p>
+        {% endif %}
+    {% endmacro %}
+
+    {% if resultado_stock %}
+        {% set articulos = resultado_stock.articulos %}
+        {% set n_art = resultado_stock.total_articulos %}
+
+        {% if resultado_stock.aproximada %}
+            <p class="mensaje-aviso">
+                No hay ningún artículo con el código «{{ consulta_stock }}».
+                Se muestran los que lo contienen: {{ n_art }} {{ 'artículo' if n_art == 1 else 'artículos' }}.
+                {% if resultado_stock.truncado %}
+                    Solo se ven los primeros {{ articulos | length }}: escribe más del código para afinar.
+                {% endif %}
+            </p>
+        {% endif %}
+
+        {% if articulos | length == 1 %}
+            {% set a = articulos[0] %}
+            <h2>Stock: {{ a.articulo }}</h2>
+            <p class="descripcion-articulo">{{ a.descripcion }}</p>
+            {{ detalle_stock(a) }}
+        {% else %}
+            <h2>Stock: {{ consulta_stock }}</h2>
+            {% for a in articulos %}
+            <details class="acordeon-pedido">
+                <summary>
+                    {{ a.articulo }}
+                    <span class="resumen-pedido">
+                        — {{ a.total }} {{ 'unidad' if a.total == 1 else 'unidades' }} — {{ a.descripcion }}
+                    </span>
+                </summary>
+                {{ detalle_stock(a) }}
+            </details>
+            {% endfor %}
+        {% endif %}
+    {% endif %}
+
+    <!-- Fichero de stock que se ha leído, para comprobar que es el actualizado -->
+    {% if info_stock %}
+        <p class="info-fichero">
+            Datos de {{ info_stock.nombre }} · modificado el {{ info_stock.modificado }} · {{ info_stock.filas }} filas
+        </p>
+    {% endif %}
+
+    <!-- ===================== RESULTADO: BÚSQUEDA POR PEDIDO DE COMPRA ===================== -->
+    {% if resultado_pedido %}
+        <h2>Pedidos de compra: {{ consulta }}</h2>
+        {% set n_pedidos = resultado_pedido.total_pedidos %}
+        <p><strong>{{ n_pedidos }} {{ 'pedido coincide' if n_pedidos == 1 else 'pedidos coinciden' }}</strong></p>
+
+        {% if resultado_pedido.truncado %}
+            <p class="mensaje-aviso">
+                Hay demasiados resultados: se muestran solo los primeros {{ resultado_pedido.pedidos | length }}.
+                Escribe más del código para afinar la búsqueda.
+            </p>
+        {% endif %}
+
+        {% for pedido in resultado_pedido.pedidos %}
+        <!-- Si solo hay un pedido, se muestra ya desplegado -->
+        <details class="acordeon-pedido" {% if resultado_pedido.pedidos | length == 1 %}open{% endif %}>
+            <summary>
+                {{ pedido.nombre }}
+                <span class="resumen-pedido">
+                    — {{ pedido.total_ofertas }} {{ 'oferta' if pedido.total_ofertas == 1 else 'ofertas' }}
+                </span>
+            </summary>
+            <div class="tabla-scroll">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Oferta</th>
+                            <th>Cliente</th>
+                            <th>Cliente final</th>
+                            <th>PDV</th>
+                            <th>Artículo</th>
+                            <th>Unidades</th>
+                            <th>Destino</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for l in pedido.lineas %}
+                        <tr>
+                            <td><a href="{{ url_for('main.index', q=l.oferta) }}">{{ l.oferta }}</a></td>
+                            <td>{{ l.cliente }}</td>
+                            <td>{{ l.cliente_final }}</td>
+                            <td>{{ l.pdv }}</td>
+                            <td>{{ l.articulo }}</td>
+                            <td>{{ l.unidades }}</td>
+                            <td>{{ l.destino if l.destino else "-" }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </details>
+        {% endfor %}
+    {% endif %}
+</body>
+</html>
