@@ -4,6 +4,7 @@
 # Toda la lógica de lectura, limpieza y cruce de datos vive aquí.
 
 import re
+import unicodedata
 from datetime import datetime
 
 import pandas as pd
@@ -21,12 +22,17 @@ NOMBRE_FICHERO_STOCK = "stockDisponible.xlsx"
 MIN_CARACTERES_PEDIDO = 4
 MAX_PEDIDOS_MOSTRADOS = 20
 
-# Consulta de stock: si no hay ningún artículo con el código exacto, se buscan
-# los que lo CONTIENEN (ej: "OLED77C66LB" encuentra "OLED77C66LB.AEU"). Para
-# eso hay que escribir al menos MIN_CARACTERES_STOCK caracteres, y se muestran
-# como mucho MAX_ARTICULOS_STOCK artículos de una vez.
+# Consulta de stock: con una sola palabra hay que escribir al menos
+# MIN_CARACTERES_STOCK caracteres, y se muestran como mucho
+# MAX_ARTICULOS_STOCK artículos de una vez.
 MIN_CARACTERES_STOCK = 4
 MAX_ARTICULOS_STOCK = 20
+
+# Palabras que se ignoran al buscar por descripción (artículos, preposiciones...)
+PALABRAS_VACIAS = {
+    "a", "al", "con", "de", "del", "el", "en", "la", "las", "lo", "los",
+    "o", "para", "por", "un", "una", "y",
+}
 
 # La columna "STOCK PROPIETARIOS" del Excel de stock es un texto del tipo
 # "TCN:TC-3 (CAVERIN): 1, GIJ:BUFFER_DAIMLER-GIJ: 3, GIJ:2M.2M GIJ: 3".
@@ -680,19 +686,86 @@ def _stock_de_articulo(filas):
     }
 
 
+def _normalizar_busqueda(texto):
+    """
+    Prepara un texto para compararlo en las búsquedas por palabras:
+    minúsculas, sin acentos y sin guiones (así "RJ-45" y "RJ45" coinciden).
+    """
+    texto = unicodedata.normalize("NFKD", str(texto).lower())
+    texto = "".join(c for c in texto if not unicodedata.combining(c))
+    return texto.replace("-", "").replace("_", "")
+
+
+def _palabras_busqueda(texto):
+    """
+    Trocea lo escrito en palabras para buscar por descripción. Devuelve una
+    lista de (palabra_para_mostrar, palabra_para_buscar), sin repetidas, sin
+    palabras vacías ("a", "de", "para"...) y sin letras sueltas. Se mantiene
+    el orden escrito: la primera es la palabra principal.
+    """
+    palabras = []
+    vistas = set()
+    for trozo in str(texto).split():
+        mostrar = trozo.strip(",;:()[]{}\"'").lower()
+        buscar = _normalizar_busqueda(mostrar)
+
+        if len(buscar) < 2 or mostrar in PALABRAS_VACIAS or buscar in vistas:
+            continue
+
+        vistas.add(buscar)
+        palabras.append((mostrar, buscar))
+
+    return palabras
+
+
+def _niveles_coincidencia(n):
+    """
+    Niveles de coincidencia, del mejor al peor, para una búsqueda de n palabras
+    (la primera es la principal). Cada nivel es (tipo, minimo, cumple), y
+    cumple(indices) dice si entra un artículo que contiene esas palabras:
+    1) "todas": contiene las n palabras.
+    2) "parcial": contiene la principal y al menos "minimo" palabras en total
+       (se prueba con n-1, n-2... hasta 2).
+    3) "principal": contiene solo la palabra principal.
+    """
+    niveles = [("todas", n, lambda indices: len(indices) == n)]
+
+    for minimo in range(n - 1, 1, -1):
+        niveles.append((
+            "parcial",
+            minimo,
+            lambda indices, m=minimo: 0 in indices and len(indices) >= m,
+        ))
+
+    if n >= 2:
+        niveles.append(("principal", 1, lambda indices: 0 in indices))
+
+    return niveles
+
+
 def buscar_stock(texto):
     """
     Consulta SOLO el Excel de stock (no mira el Excel diario) y devuelve el
     stock por propietario de los artículos que coinciden con lo escrito:
     1) Si hay un artículo con ese código exacto (sin distinguir mayúsculas
        ni espacios), se devuelve solo ese.
-    2) Si no, se devuelven los artículos cuyo código CONTIENE lo escrito
-       (ej: "OLED77C66LB" encuentra "OLED77C66LB.AEU"), siempre que se
-       escriban al menos MIN_CARACTERES_STOCK caracteres.
+    2) Si no, se busca por palabras en el código y en la descripción del
+       artículo (sin distinguir mayúsculas, acentos ni guiones). La primera
+       palabra es la principal. Se prueba por niveles y nos quedamos con el
+       primero que dé resultados:
+         - todas las palabras;
+         - la principal y al menos otras (n-1, n-2... hasta 2 en total);
+         - solo la principal.
+       Con una sola palabra hay que escribir al menos MIN_CARACTERES_STOCK
+       caracteres.
+       Dentro del nivel, primero los artículos con más stock.
 
     Devuelve None si no hay ninguna coincidencia (se interpreta como stock 0).
     Si no, un diccionario con:
-    - aproximada: True si no había coincidencia exacta (caso 2)
+    - aproximada: True si no era un código exacto (caso 2)
+    - palabras: las palabras buscadas, tal como se escribieron
+    - nivel: "todas", "parcial" o "principal" (None si era código exacto)
+    - minimas: nº mínimo de palabras del nivel (solo útil en "parcial")
     - total_articulos: nº de artículos que coinciden
     - truncado: True si hay más artículos que MAX_ARTICULOS_STOCK
     - articulos: lista (como mucho MAX_ARTICULOS_STOCK) con el stock de cada
@@ -702,44 +775,71 @@ def buscar_stock(texto):
     """
     df = cargar_stock_completo()
 
-    buscado = str(texto).strip().lower()
-    if buscado in ("", "-"):
+    escrito = str(texto).strip().lower()
+    if escrito in ("", "-"):
         return None
 
-    articulos_norm = df["ARTICULO"].astype(str).str.strip().str.lower()
+    # Una columna auxiliar con el código normalizado (sin tocar el DataFrame
+    # original, que es el de la caché)
+    df = df.assign(_art=df["ARTICULO"].astype(str).str.strip().str.lower())
 
-    # 1) Coincidencia exacta
-    coincide = articulos_norm == buscado
-    aproximada = False
+    # 1) Código exacto
+    exactas = df[df["_art"] == escrito]
+    if not exactas.empty:
+        return {
+            "aproximada": False,
+            "palabras": [],
+            "nivel": None,
+            "minimas": None,
+            "total_articulos": 1,
+            "truncado": False,
+            "articulos": [_stock_de_articulo(exactas)],
+        }
 
-    # 2) Si no hay exacta, coincidencia parcial
-    if not coincide.any():
-        if len(buscado) < MIN_CARACTERES_STOCK:
-            return None
+    # 2) Búsqueda por palabras en el código y la descripción
+    palabras = _palabras_busqueda(escrito)
+    if not palabras:
+        return None
 
-        coincide = articulos_norm.str.contains(buscado, regex=False)
-        aproximada = True
+    if len(palabras) == 1 and len(palabras[0][1]) < MIN_CARACTERES_STOCK:
+        return None
 
-        if not coincide.any():
-            return None
+    buscar = [palabra_buscar for _, palabra_buscar in palabras]
 
-    filas = df[coincide].copy()
-    filas["_art"] = articulos_norm[coincide]
+    # Para cada artículo, qué palabras de la búsqueda contiene
+    candidatos = []
+    for _, filas in df.groupby("_art"):
+        codigo = str(filas.iloc[0]["ARTICULO"]).strip()
+        descripcion = next(
+            (str(d) for d in filas["DESCRIPCION"] if limpiar_valor(d) != "-"),
+            "",
+        )
+        pajar = _normalizar_busqueda(f"{codigo} {descripcion}")
 
-    # Un artículo por grupo. Primero los que EMPIEZAN por lo escrito y luego
-    # el resto, cada bloque ordenado alfabéticamente.
-    grupos = sorted(
-        filas.groupby("_art"),
-        key=lambda grupo: (not grupo[0].startswith(buscado), grupo[0]),
-    )
+        indices = {i for i, palabra in enumerate(buscar) if palabra in pajar}
+        if indices:
+            candidatos.append((filas, indices))
+
+    # Nos quedamos con el primer nivel que tenga algún artículo
+    for tipo, minimo, cumple in _niveles_coincidencia(len(buscar)):
+        elegidos = [filas for filas, indices in candidatos if cumple(indices)]
+        if elegidos:
+            break
+    else:
+        return None
+
+    # Primero los que tienen más stock y, si empatan, por código
+    articulos = [_stock_de_articulo(filas) for filas in elegidos]
+    articulos.sort(key=lambda a: (-_a_numero(a["total"]), a["articulo"].lower()))
 
     return {
-        "aproximada": aproximada,
-        "total_articulos": len(grupos),
-        "truncado": len(grupos) > MAX_ARTICULOS_STOCK,
-        "articulos": [
-            _stock_de_articulo(grupo) for _, grupo in grupos[:MAX_ARTICULOS_STOCK]
-        ],
+        "aproximada": True,
+        "palabras": [palabra_mostrar for palabra_mostrar, _ in palabras],
+        "nivel": tipo,
+        "minimas": minimo,
+        "total_articulos": len(articulos),
+        "truncado": len(articulos) > MAX_ARTICULOS_STOCK,
+        "articulos": articulos[:MAX_ARTICULOS_STOCK],
     }
 
 

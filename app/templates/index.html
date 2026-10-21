@@ -22,14 +22,14 @@
             <button type="submit">Buscar</button>
         </form>
 
-        <!-- Consulta de stock de un artículo (según el Excel de stock) -->
+        <!-- Consulta de stock por código de artículo o por palabras de la descripción -->
         <form method="get" action="/" class="buscador-stock">
             <input
                 type="text"
                 id="stock"
                 name="stock"
                 value="{{ consulta_stock }}"
-                placeholder="Consultar stock de un artículo, ej: 43UM662H4LC.AEU"
+                placeholder="Consultar stock por artículo o descripción, ej: 43UM662H4LC.AEU o conversor rj45 usb"
             >
             <button type="submit">Ver stock</button>
         </form>
@@ -55,6 +55,7 @@
             {% if consulta_stock | length < min_caracteres_stock %}
                 <br>Para buscar por parte del código escribe al menos {{ min_caracteres_stock }} caracteres.
             {% endif %}
+            <br>También puedes escribir varias palabras de la descripción (la primera es la principal).
         </p>
     {% endif %}
 
@@ -235,11 +236,28 @@
         {% set n_art = resultado_stock.total_articulos %}
 
         {% if resultado_stock.aproximada %}
+            {% set palabras = resultado_stock.palabras %}
             <p class="mensaje-aviso">
-                No hay ningún artículo con el código «{{ consulta_stock }}».
-                Se muestran los que lo contienen: {{ n_art }} {{ 'artículo' if n_art == 1 else 'artículos' }}.
+                {% if palabras | length <= 1 %}
+                    No hay ningún artículo con el código «{{ consulta_stock }}».
+                    Se muestran los que lo contienen en el código o en la descripción:
+                    {{ n_art }} {{ 'artículo' if n_art == 1 else 'artículos' }}.
+                {% elif resultado_stock.nivel == 'todas' %}
+                    Artículos que contienen todas las palabras ({{ palabras | join(', ') }}):
+                    {{ n_art }}.
+                {% elif resultado_stock.nivel == 'parcial' %}
+                    Ningún artículo contiene todas las palabras.
+                    Se muestran los que contienen «{{ palabras[0] }}» y al menos
+                    {{ resultado_stock.minimas - 1 }} más de: {{ palabras[1:] | join(', ') }}
+                    ({{ n_art }}).
+                {% else %}
+                    Ningún artículo reúne varias de las palabras.
+                    Se muestran los que contienen «{{ palabras[0] }}» ({{ n_art }}).
+                {% endif %}
+                Ordenados de más a menos stock.
                 {% if resultado_stock.truncado %}
-                    Solo se ven los primeros {{ articulos | length }}: escribe más del código para afinar.
+                    Solo se ven los primeros {{ articulos | length }}:
+                    escribe más palabras o más del código para afinar.
                 {% endif %}
             </p>
         {% endif %}
