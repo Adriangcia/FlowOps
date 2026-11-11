@@ -13,6 +13,12 @@ from pathlib import Path
 # Ruta a la carpeta Excels/, calculada de forma relativa al propio fichero.
 EXCELS_DIR = Path(__file__).resolve().parent.parent / "Excels"
 
+# Palabra que identifica al Excel diario: cualquier .xlsx de Excels/ cuyo nombre
+# la contenga (sin distinguir mayúsculas, espacios, guiones ni guiones bajos).
+# Así "PendienteServir.xlsx" o "Pendiente Servir (1).xlsx" valen, y cualquier
+# otro Excel que haya en la carpeta (ej: 2m-2m.xlsx) se ignora.
+NOMBRE_EXCEL_DIARIO = "pendienteservir"
+
 # Nombre fijo del fichero de stock (se sobreescribe en cada descarga).
 NOMBRE_FICHERO_STOCK = "stockDisponible.xlsx"
 
@@ -51,23 +57,39 @@ TRADUCCION_DESTINOS = {
 }
 
 
+def _nombre_normalizado(nombre):
+    """
+    Nombre de fichero en minúsculas y sin espacios, guiones ni guiones bajos.
+    """
+    return re.sub(r"[\s_\-]+", "", nombre.lower())
+
+
 def obtener_ruta_excel():
     """
-    Busca el Excel diario (PendienteServir) dentro de Excels/.
-    Es el único .xlsx que NO se llama stockDisponible.xlsx
-    (ese nombre está reservado para el Excel de stock).
+    Busca el Excel diario dentro de Excels/: el .xlsx cuyo nombre contiene
+    "PendienteServir" (ver NOMBRE_EXCEL_DIARIO). Se ignoran los ficheros
+    temporales de Excel (~$...) y cualquier otro Excel de la carpeta.
+    Si hay varios con ese nombre (ej: "PendienteServir (1).xlsx"), se usa el
+    más reciente.
     """
-    ficheros = [
+    todos = [
         f for f in EXCELS_DIR.glob("*.xlsx")
-        if f.name != NOMBRE_FICHERO_STOCK
+        if not f.name.startswith(("~$", "."))
     ]
 
-    if not ficheros:
+    candidatos = [
+        f for f in todos
+        if NOMBRE_EXCEL_DIARIO in _nombre_normalizado(f.name)
+    ]
+
+    if not candidatos:
+        encontrados = ", ".join(sorted(f.name for f in todos)) or "ninguno"
         raise FileNotFoundError(
-            "No se ha encontrado el Excel diario (PendienteServir) en Excels/"
+            "No se ha encontrado el Excel diario en Excels/ "
+            f"(el nombre del fichero debe contener «PendienteServir»; ahora hay: {encontrados})"
         )
 
-    return ficheros[0]
+    return max(candidatos, key=lambda f: f.stat().st_mtime)
 
 
 def obtener_ruta_stock():
@@ -165,7 +187,9 @@ def formatear_pdv(numero_pedido):
 
 def limpiar_articulo(valor):
     """
-    Normaliza el código de Artículo forzándolo siempre a texto.
+    Normaliza el código de Artículo forzándolo siempre a texto y sin espacios
+    al principio ni al final (algunos códigos del Excel diario llevan un
+    espacio de más, ej: 'FT2-202-ELEC-PTL-B ').
     Algunos partnumbers son puramente numéricos y pandas los interpreta
     como int/float; los convertimos a string para que sean consistentes
     con los códigos alfanuméricos (ej: 'ININ-OS').
@@ -176,7 +200,24 @@ def limpiar_articulo(valor):
     if isinstance(valor, float) and valor.is_integer():
         return str(int(valor))
 
-    return str(valor)
+    return str(valor).strip()
+
+
+def _clave_articulo(valor):
+    """
+    Clave para COMPARAR códigos de artículo entre los dos Excels (y con lo que
+    se escribe en los buscadores): texto en minúsculas, sin espacios
+    alrededor y, si el código son solo cifras, sin ceros a la izquierda.
+    Hace falta porque el mismo artículo puede venir como 61018 (número, sin
+    el cero) en el Excel diario y como "061018" (texto) en el de stock.
+    Esta clave solo sirve para comparar; para mostrar se usa limpiar_articulo.
+    """
+    codigo = limpiar_articulo(valor).lower()
+
+    if codigo.isdigit():
+        codigo = codigo.lstrip("0") or "0"
+
+    return codigo
 
 
 def traducir_destino(propietario):
@@ -298,15 +339,16 @@ def _referencias_cliente(df_filas):
 def _construir_mapa_stock():
     """
     Carga el Excel de stock y lo convierte en un diccionario
-    {(articulo, propietario): stock} para consultas rápidas O(1)
-    al recorrer los artículos.
+    {(clave del artículo, propietario): stock} para consultas rápidas O(1)
+    al recorrer los artículos. La clave del artículo es _clave_articulo, para
+    que 61018 y 061018 se reconozcan como el mismo código.
     """
     df_stock = cargar_stock()
 
     mapa = {}
     for _, fila in df_stock.iterrows():
         clave = (
-            limpiar_articulo(fila["ARTICULO"]),
+            _clave_articulo(fila["ARTICULO"]),
             str(fila["NOMBRE PROPIETARIO"]).strip() if pd.notna(fila["NOMBRE PROPIETARIO"]) else "",
         )
         mapa[clave] = _a_numero(fila["STOCK"])
@@ -358,7 +400,7 @@ def _fila_a_articulo(fila, incluir_destino=False, incluir_preparacion=False, map
         propietario_original = (
             str(fila["Propietario"]).strip() if pd.notna(fila["Propietario"]) else ""
         )
-        clave = (articulo["articulo"], propietario_original)
+        clave = (_clave_articulo(fila["Artículo"]), propietario_original)
         articulo["stock"] = _formatear_numero(mapa_stock.get(clave, 0.0))
 
     return articulo
@@ -468,18 +510,20 @@ def buscar_articulo(codigo_articulo):
       PDV, Pedido de compra, Unidades, Destino y Stock en ese destino
       (cruzado por Artículo + Propietario)
 
-    La búsqueda es exacta pero sin distinguir mayúsculas/minúsculas ni
-    espacios al principio/final. Si no hay coincidencias, devuelve None.
+    La búsqueda es exacta pero sin distinguir mayúsculas/minúsculas, espacios
+    al principio/final ni ceros a la izquierda en los códigos numéricos
+    (61018 y 061018 son el mismo artículo). Si no hay coincidencias,
+    devuelve None.
     """
     df = cargar_datos()
 
-    buscado = str(codigo_articulo).strip().lower()
+    buscado = _clave_articulo(codigo_articulo)
     if buscado in ("", "-"):
         return None
 
-    # Normalizamos la columna Artículo a texto (hay partnumbers numéricos)
-    # para poder compararla con lo que se escribe en el buscador.
-    articulos_norm = df["Artículo"].apply(limpiar_articulo).str.strip().str.lower()
+    # Comparamos con la clave del artículo (hay partnumbers numéricos y
+    # códigos con espacios o ceros de más) en vez del texto tal cual.
+    articulos_norm = df["Artículo"].map(_clave_articulo)
     resultado = df[articulos_norm == buscado]
 
     if resultado.empty:
@@ -747,8 +791,9 @@ def buscar_stock(texto):
     """
     Consulta SOLO el Excel de stock (no mira el Excel diario) y devuelve el
     stock por propietario de los artículos que coinciden con lo escrito:
-    1) Si hay un artículo con ese código exacto (sin distinguir mayúsculas
-       ni espacios), se devuelve solo ese.
+    1) Si hay un artículo con ese código exacto (sin distinguir mayúsculas,
+       espacios ni ceros a la izquierda en los códigos numéricos), se
+       devuelve solo ese.
     2) Si no, se busca por palabras en el código y en la descripción del
        artículo (sin distinguir mayúsculas, acentos ni guiones). La primera
        palabra es la principal. Se prueba por niveles y nos quedamos con el
@@ -779,12 +824,12 @@ def buscar_stock(texto):
     if escrito in ("", "-"):
         return None
 
-    # Una columna auxiliar con el código normalizado (sin tocar el DataFrame
+    # Una columna auxiliar con la clave del código (sin tocar el DataFrame
     # original, que es el de la caché)
-    df = df.assign(_art=df["ARTICULO"].astype(str).str.strip().str.lower())
+    df = df.assign(_art=df["ARTICULO"].map(_clave_articulo))
 
-    # 1) Código exacto
-    exactas = df[df["_art"] == escrito]
+    # 1) Código exacto (61018 y 061018 se consideran el mismo código)
+    exactas = df[df["_art"] == _clave_articulo(escrito)]
     if not exactas.empty:
         return {
             "aproximada": False,
